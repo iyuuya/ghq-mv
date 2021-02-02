@@ -51,4 +51,10 @@ root = ~/go/src/
 ```
 
 ## Installation
-TBU
+### Git
+```
+git clone https://github.com/iyuuya/ghq-mv 
+cd ghq-my
+ln -s $PWD/ghq-my PATH_TO/bin:ghq-mv
+```
+
