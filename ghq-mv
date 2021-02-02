@@ -1,0 +1,171 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require 'fileutils'
+require 'optparse'
+require 'open3'
+
+module GhqMv
+  module Output
+    def log(str)
+      puts str if GhqMv::Option.verbose
+    end
+  end
+
+  class Option
+    class << self
+      attr_accessor :verbose, :dry_run
+
+      def ghq_root
+        @ghq_root ||= `ghq root`.lines.first.chop
+      end
+    end
+  end
+
+  class Repo
+    include Output
+
+    DEFAULT_HOST = ENV.fetch('GHQ_MV_HOST', 'github.com')
+
+    attr_accessor :host, :owner, :name
+
+    def initialize(host: nil, owner: nil, name: nil)
+      @host = host
+      @owner = owner
+      @name = name
+    end
+
+    def to_s
+      "#{@host}/#{@owner}/#{@name}"
+    end
+
+    def path
+      "#{GhqMv::Option.ghq_root}/#{self}"
+    end
+
+    def path_exist?
+      Dir.exist?(path)
+    end
+
+    def move_to(repo)
+      log '==> move directory'
+      log "#{path} => #{repo.path}"
+      FileUtils.mv(path, repo.path) unless Option.dry_run
+    end
+
+    def set_remote_url(remote, dest_repo)
+      log '==> change remote url'
+
+      d = diff(dest_repo)
+      src_remote = get_remote_url(remote)
+      dest_remote = src_remote.dup
+
+      dest_remote.sub!(host, dest_repo.host) if d[:host]
+      dest_remote.sub!(owner, dest_repo.owner) if d[:owner]
+      dest_remote.sub!(name, dest_repo.name) if d[:name]
+
+      log "[remote = #{remote}] #{src_remote} => #{dest_remote}"
+      return if Option.dry_run
+      return unless d[:host] || d[:owner] || d[:name]
+
+      _, out_and_err = Open3.popen2("git -C #{path} remote set-url #{remote} #{dest_remote}")
+      log out_and_err.read
+    end
+
+    private
+
+    def get_remote_url(remote)
+      `git -C #{path} remote get-url #{remote}`.chop
+    end
+
+    def diff(target)
+      { host: @host != target.host, owner: @owner != target.owner, name: @name != target.name }
+    end
+
+    class << self
+      def parse(str, host: nil)
+        sx = str.split('/')
+        repo = new(host: host)
+        repo.name = sx.pop
+        repo.owner = sx.pop
+        repo.host = sx.join('/') if sx.any?
+        repo
+      end
+    end
+  end
+
+  class << self
+    include Output
+
+    def usage
+      warn 'Usage:'
+      warn '    ghq-mv [options] src dest {remote}'
+      warn ''
+      warn 'Options:'
+      warn '    -d | --dry-run : print result without execute'
+      warn '    -v | --verbose : print result with execute'
+      warn ''
+      warn '    remote default value is `origin`'
+      warn ''
+      warn 'Example:'
+      warn '    ghq-mv -v iyuuya/ghq-mv for-you/ghq-mv-2 origin'
+    end
+
+    def parse_cli_options(argv)
+      opt = OptionParser.new
+      Option.verbose = false
+      Option.dry_run = false
+
+      opt.on('-v', '--verbose') { |v| GhqMv::Option.verbose = v }
+      opt.on('-d', '--dry-drun') do |v|
+        Option.dry_run = v
+        Option.verbose = v
+      end
+      opt.on('-h', '--help') do
+        usage
+        exit
+      end
+      opt.parse!(argv)
+
+      if argv.count < 2 || argv.count > 4
+        usage
+        exit 1
+      end
+
+      src = Repo.parse(argv[0], host: Repo::DEFAULT_HOST)
+      dest = Repo.parse(argv[1])
+      remote = argv[2] || 'origin'
+
+      return src, dest, remote
+    end
+
+    def start(argv)
+      src, dest, remote = parse_cli_options(argv)
+
+      if src.owner.nil?
+        warn "src owner required. {owner}/#{src.name}"
+        exit 1
+      end
+
+      dest.host = src.host.dup if dest.host.nil?
+      dest.owner = src.owner.dup if dest.owner.nil?
+
+      unless src.path_exist?
+        warn "#{src} is not exist!"
+        log "path: #{src.path}"
+        exit 1
+      end
+
+      if dest.path_exist?
+        warn "#{dest} is exist!"
+        log "path: #{dest.path}"
+        exit 1
+      end
+
+      src.set_remote_url(remote, dest)
+      src.move_to(dest)
+    end
+  end
+end
+
+GhqMv.start(ARGV)
